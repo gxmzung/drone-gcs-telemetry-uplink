@@ -366,3 +366,48 @@ drone-gcs-telemetry-forwarder/
 ├── README.md
 └── .env.example
 ```
+
+---
+
+## 14. Windows UDP/RTSP Uplink Implementation
+
+현재 Windows uplink 구현은 외부 현장 설치를 단순화하기 위해 런타임 의존성을 최소화했습니다.
+
+### UDP / MAVLink
+
+- QGroundControl 또는 GCS가 UDP를 uplink 수신 포트로 전달합니다.
+- uplink는 원본 UDP payload를 변경하지 않고 Workstation으로 전달합니다.
+- MAVLink v1/v2 header에서 `systemId`, `componentId`, `sequence`, `messageId`를 읽어 장비 이벤트를 기록합니다.
+- Packet Loss는 **장비별 100개 sequence slot 단위**로 계산합니다.
+- sequence `255 → 0` wrap-around를 정상 연속 패킷으로 처리합니다.
+- sequence 역행/재시작으로 판단되는 큰 점프는 새 측정 구간으로 시작합니다.
+
+### Period measurement
+
+각 장비의 연속 수신 패킷 간 시간을 `periodMs`로 기록하고, 100개 sequence window 완료 시 다음 통계를 남깁니다.
+
+- `periodAvgMs`
+- `periodP95Ms`
+- `periodMaxMs`
+
+### Device event log
+
+장비 이벤트는 일자별 JSONL로 저장됩니다.
+
+```text
+logs/device-events-YYYY-MM-DD.jsonl
+```
+
+패킷 단위:
+
+```json
+{"event":"DEVICE_PACKET","deviceId":"MAVLINK-SYS1-COMP1","seq":42,"periodMs":1000}
+```
+
+100 sequence 측정 완료:
+
+```json
+{"event":"DEVICE_SEQ_WINDOW","windowSize":100,"expected":100,"received":99,"lost":1,"lossPct":1.0}
+```
+
+이 로그는 Packet Loss/주기 측정의 원시 증적으로 사용할 수 있습니다.
