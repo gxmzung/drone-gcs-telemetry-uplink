@@ -1,0 +1,15 @@
+﻿{
+  "name": "drone-gcs-telemetry-uplink",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dependency-free Windows UDP and RTSP uplink for drone GCS",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js --config config.json",
+    "test": "node --test test/*.test.js",
+    "portable": "powershell -ExecutionPolicy Bypass -File scripts/build-portable.ps1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
