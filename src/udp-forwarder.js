@@ -1,21 +1,39 @@
-﻿"use strict";
+"use strict";
 
 const dgram = require("node:dgram");
-const { parseMavlinkFrames } = require("./mavlink");
+const { createHash } = require("node:crypto");
+const { parseMavlinkFrames, decodeMavlinkMessage } = require("./mavlink");
 const { DeviceSequenceMetrics } = require("./device-metrics");
+const { TelemetryAggregator } = require("./telemetry-aggregator");
 
-function startUdpForwarder(config, logger) {
+function startUdpForwarder(config, logger, options = {}) {
+  if (config.forwardEnabled === true && config.listenPort === config.targetPort &&
+      (config.listenHost === config.targetHost || ['127.0.0.1','localhost','0.0.0.0'].includes(config.targetHost))) {
+    return Promise.reject(new Error('UDP forwarding destination loops back to listener'));
+  }
   const socket = dgram.createSocket("udp4");
+  const recentlyForwarded = new Map();
   const deviceMetrics = new DeviceSequenceMetrics();
+  const telemetryAggregator = new TelemetryAggregator(options.telemetry);
 
   const stats = {
     packets: 0,
     bytes: 0,
     sendErrors: 0,
+    loopPacketsSuppressed: 0,
     mavlinkFrames: 0,
+    telemetryCount: 0,
+    decodedFrames: 0,
+    validatedMessageCounts: {},
+    rejectedTelemetryFrames: 0,
+    rejectedTelemetryMessageCounts: {},
+    lastDecodedTelemetryAt: null,
+    telemetryIdentity: null,
     completedSeqWindows: 0,
     lastSource: null,
     lastPacketAt: null,
+    lastTelemetryAt: null,
+    messageCounts: {},
     devices: [],
   };
 
@@ -31,8 +49,9 @@ function startUdpForwarder(config, logger) {
     stats.mavlinkFrames += frames.length;
 
     for (const frame of frames) {
-      const observation = deviceMetrics.observe(frame, now);
+      stats.messageCounts[frame.messageId] = (stats.messageCounts[frame.messageId] ?? 0) + 1;
 
+      const observation = deviceMetrics.observe(frame, now);
       logger.device("DEVICE_PACKET", observation.packet);
 
       for (const summary of observation.completed) {
@@ -40,15 +59,40 @@ function startUdpForwarder(config, logger) {
         logger.device("DEVICE_SEQ_WINDOW", summary);
         logger.info("DEVICE_SEQ_WINDOW", summary);
       }
+
+      const decoded = decodeMavlinkMessage(message, frame);
+      if (decoded) {
+        stats.decodedFrames++;
+        stats.validatedMessageCounts[frame.messageId] = (stats.validatedMessageCounts[frame.messageId] ?? 0) + 1;
+        stats.lastDecodedTelemetryAt = new Date(now).toISOString();
+      } else if ([0,1,24,30,33,42].includes(frame.messageId)) {
+        stats.rejectedTelemetryFrames++;
+        stats.rejectedTelemetryMessageCounts[frame.messageId] = (stats.rejectedTelemetryMessageCounts[frame.messageId] ?? 0) + 1;
+      }
+      const telemetry = telemetryAggregator.accept(
+        frame,
+        decoded,
+        `${remote.address}:${remote.port}`,
+        now,
+      );
+
+      if (telemetry) {
+        stats.telemetryCount += 1;
+        stats.lastTelemetryAt = telemetry.observedAt;
+        stats.telemetryIdentity = { systemId: frame.systemId, componentId: frame.componentId };
+        options.onTelemetry?.(telemetry);
+      }
     }
 
     stats.devices = deviceMetrics.snapshot();
 
-    socket.send(
-      message,
-      config.targetPort,
-      config.targetHost,
-      (error) => {
+    if (config.forwardEnabled === true) {
+      const digest = createHash('sha256').update(message).digest('hex');
+      for (const [key,at] of recentlyForwarded) if (now-at>2000) recentlyForwarded.delete(key);
+      if (recentlyForwarded.has(digest)) {stats.loopPacketsSuppressed++;return;}
+      if (recentlyForwarded.size>=1000) recentlyForwarded.delete(recentlyForwarded.keys().next().value);
+      recentlyForwarded.set(digest,now);
+      socket.send(message, config.targetPort, config.targetHost, (error) => {
         if (error) {
           stats.sendErrors += 1;
           logger.error("UDP_SEND_FAILED", {
@@ -56,8 +100,8 @@ function startUdpForwarder(config, logger) {
             target: `${config.targetHost}:${config.targetPort}`,
           });
         }
-      },
-    );
+      });
+    }
   });
 
   socket.on("error", (error) => {
@@ -66,30 +110,23 @@ function startUdpForwarder(config, logger) {
 
   return new Promise((resolve, reject) => {
     socket.once("error", reject);
-
     socket.bind(config.listenPort, config.listenHost, () => {
       socket.removeListener("error", reject);
       const address = socket.address();
-
       logger.info("UDP_LISTENING", {
         listen: `${address.address}:${address.port}`,
-        target: `${config.targetHost}:${config.targetPort}`,
+        target: config.forwardEnabled !== true ? null : `${config.targetHost}:${config.targetPort}`,
+        forwardEnabled: config.forwardEnabled === true,
         sequenceWindow: 100,
         deviceEventLog: "logs/device-events-YYYY-MM-DD.jsonl",
       });
-
       resolve({
         socket,
         address,
         stats,
-        close: () =>
-          new Promise((done) => {
-            try {
-              socket.close(() => done());
-            } catch {
-              done();
-            }
-          }),
+        close: () => new Promise((done) => {
+          try { socket.close(() => done()); } catch { done(); }
+        }),
       });
     });
   });

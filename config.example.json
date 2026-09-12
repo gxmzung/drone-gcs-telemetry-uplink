@@ -1,6 +1,7 @@
-﻿{
+{
   "udp": {
     "enabled": true,
+    "forwardEnabled": false,
     "listenHost": "127.0.0.1",
     "listenPort": 14551,
     "targetHost": "127.0.0.1",
@@ -12,6 +13,17 @@
     "listenPort": 9554,
     "sourceHost": "127.0.0.1",
     "sourcePort": 8554
+  },
+  "telemetry": {
+    "enabled": false,
+    "systemId": 1,
+    "componentId": 1,
+    "endpoint": "http://127.0.0.1:18020/api/v1/dashboard/telemetry/drone",
+    "assetId": "MD1000-01",
+    "eventId": "10000000-0000-4000-8000-000000000001",
+    "assetType": "UAV",
+    "intervalMs": 1000,
+    "timeoutMs": 3000
   },
   "logging": {
     "directory": "logs",

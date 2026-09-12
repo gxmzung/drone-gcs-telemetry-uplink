@@ -108,6 +108,7 @@ test("UDP payload is forwarded without modification", async () => {
       listenPort: 0,
       targetHost: "127.0.0.1",
       targetPort,
+      forwardEnabled: true,
     },
     logger,
   );

@@ -66,3 +66,34 @@ New-NetFirewallRule -DisplayName "Drone GCS RTSP Uplink 9554" -Direction Inbound
 ```
 
 UDP는 QGC가 같은 GCS PC의 `127.0.0.1:14551`로 보내는 기본 구성에서는 인바운드 방화벽 개방이 필요하지 않습니다.
+
+## Live telemetry -> Core
+
+`config.json`에서 다음을 실제 현장 값으로 설정합니다.
+
+```json
+"telemetry": {
+  "enabled": true,
+  "systemId": 1,
+  "componentId": 1,
+  "endpoint": "https://api.forest.tobeunicorn.kr/api/v1/dashboard/telemetry/drone",
+  "assetId": "MD1000-01",
+  "eventId": "ACTIVE_EVENT_UUID",
+  "assetType": "UAV",
+  "intervalMs": 1000,
+  "timeoutMs": 3000
+}
+```
+
+`systemId/componentId`는 MAVLink 송신 주체의 ID입니다. 기본값 `1/1`에서 `validatedMessageCounts[33]`는 증가하지만 `telemetryCount`가 증가하지 않으면 `UPLINK_STATUS.devices`와 `logs/device-events-YYYY-MM-DD.jsonl`에서 실제 sender ID를 확인합니다.
+
+상태 로그에서 구분해서 봅니다.
+
+- `messageCounts`: 프레이밍된 원본 메시지 ID 수. CRC 실패 프레임도 포함될 수 있습니다.
+- `validatedMessageCounts`: 지원 메시지 중 CRC 검증을 통과한 수.
+- `rejectedTelemetryMessageCounts`: 알려진 telemetry message ID지만 CRC/길이 검증에 실패한 수.
+- `telemetryIdentity`: 실제 위치 observation을 만든 `systemId/componentId`.
+- `telemetryCount`: `GLOBAL_POSITION_INT(33)`에서 정상 위치 observation을 생성한 수.
+- `telemetryPublisher.coreAccepted`: Core가 해당 observation을 정상 수락하고 동일 ID/시각으로 응답한 수.
+
+MAVLink 2 packet signing flag가 있는 프레임도 CRC 검증 후 읽을 수 있지만, 현재 uplink는 13-byte MAVLink signature를 암호학적으로 검증하지 않습니다. 대시보드에는 signature 존재 여부와 검증 여부를 구분해서 표시합니다.
