@@ -167,7 +167,7 @@ Forwarder가 수신한 위치 정보는 지정된 서버 인터페이스로 전�
 Example:
 
 ```http
-POST /api/telemetry/drone
+POST /internal/v1/telemetry/drone
 Content-Type: application/json
 ```
 
@@ -269,7 +269,7 @@ gcs:
   protocol: TBD
 
 server:
-  url: https://example.com/api/telemetry/drone
+  url: https://example.com/internal/v1/telemetry/drone
   timeout_sec: 5
 
 telemetry:
