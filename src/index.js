@@ -7,7 +7,7 @@ const udpHost = process.env.GCS_UDP_HOST?.trim() || "0.0.0.0";
 const udpPort = Number.parseInt(process.env.GCS_UDP_PORT || "14551", 10);
 const serverUrl =
   process.env.TELEMETRY_SERVER_URL?.trim() ||
-  "http://127.0.0.1:18020/api/telemetry/drone";
+  "http://127.0.0.1:18020/internal/v1/telemetry/drone";
 
 if (!Number.isInteger(udpPort) || udpPort < 1 || udpPort > 65535) {
   throw new Error("GCS_UDP_PORT must be a valid UDP port");
