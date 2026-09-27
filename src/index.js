@@ -17,16 +17,42 @@ const socket = createUdpListener({
   host: udpHost,
   port: udpPort,
   async onPacket(message, remote) {
-    const telemetry = parseUdpTelemetry(message);
+    const source = `${remote.address}:${remote.port}`;
 
-    log("TELEMETRY_RECEIVED", {
-      droneId: telemetry.droneId,
-      source: `${remote.address}:${remote.port}`
-    });
+    try {
+      const telemetry = parseUdpTelemetry(message);
 
-    await sendTelemetry(telemetry, {
-      url: serverUrl
-    });
+      log("TELEMETRY_RECEIVED", {
+        droneId: telemetry.droneId,
+        source,
+        bytes: message.length
+      });
+
+      await sendTelemetry(telemetry, {
+        url: serverUrl
+      });
+    } catch (error) {
+      const mavlinkMagic =
+        message.length > 0 &&
+        (message[0] === 0xfd || message[0] === 0xfe);
+
+      log(
+        mavlinkMagic ? "MAVLINK_BINARY_RECEIVED" : "UDP_PACKET_REJECTED",
+        {
+          source,
+          bytes: message.length,
+          firstByte:
+            message.length > 0
+              ? `0x${message[0].toString(16).padStart(2, "0")}`
+              : null,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        mavlinkMagic ? "WARN" : "ERROR"
+      );
+    }
   }
 });
 
