@@ -1,8 +1,13 @@
-﻿const MAVLINK_V1_MAGIC = 0xfe;
+const MAVLINK_V1_MAGIC = 0xfe;
 const MAVLINK_V2_MAGIC = 0xfd;
 
+const GPS_RAW_INT_ID = 24;
+const GPS_RAW_INT_CRC_EXTRA = 24;
 const GLOBAL_POSITION_INT_ID = 33;
 const GLOBAL_POSITION_INT_CRC_EXTRA = 104;
+
+const UNKNOWN_UINT16 = 0xffff;
+const UNKNOWN_UINT8 = 0xff;
 
 function x25Accumulate(byte, crc) {
   let tmp = byte ^ (crc & 0xff);
@@ -91,36 +96,38 @@ function readFrame(buffer, offset) {
   };
 }
 
-function verifyGlobalPositionChecksum(buffer, frame) {
-  const crcStart = frame.offset + 1;
-  const crcEnd = frame.checksumOffset;
-
+function verifyChecksum(buffer, frame, crcExtra, messageName) {
   const calculated = x25Checksum(
-    buffer.subarray(crcStart, crcEnd),
-    GLOBAL_POSITION_INT_CRC_EXTRA
+    buffer.subarray(frame.offset + 1, frame.checksumOffset),
+    crcExtra
   );
 
   const received = buffer.readUInt16LE(frame.checksumOffset);
 
   if (calculated !== received) {
     throw new Error(
-      `GLOBAL_POSITION_INT checksum mismatch: expected ${received}, calculated ${calculated}`
+      `${messageName} checksum mismatch: expected ${received}, calculated ${calculated}`
     );
   }
 }
 
-function decodeGlobalPositionInt(buffer, frame, droneIdOverride) {
-  if (frame.messageId !== GLOBAL_POSITION_INT_ID) {
-    return null;
-  }
+function droneIdFor(frame, override) {
+  return override?.trim() || `mavlink-${frame.systemId}`;
+}
 
+function decodeGlobalPositionInt(buffer, frame, droneIdOverride) {
   if (frame.payloadLength < 16) {
     throw new Error(
       `GLOBAL_POSITION_INT position payload too short: ${frame.payloadLength}`
     );
   }
 
-  verifyGlobalPositionChecksum(buffer, frame);
+  verifyChecksum(
+    buffer,
+    frame,
+    GLOBAL_POSITION_INT_CRC_EXTRA,
+    "GLOBAL_POSITION_INT"
+  );
 
   const p = frame.payloadOffset;
 
@@ -139,14 +146,70 @@ function decodeGlobalPositionInt(buffer, frame, droneIdOverride) {
   }
 
   return {
-    droneId:
-      droneIdOverride?.trim() ||
-      `mavlink-${frame.systemId}`,
+    kind: "POSITION",
+    droneId: droneIdFor(frame, droneIdOverride),
     timestamp: new Date().toISOString(),
     latitude,
     longitude,
-    altitude
+    altitude,
+    positionSource: "GLOBAL_POSITION_INT(33)"
   };
+}
+
+function decodeGpsRawInt(buffer, frame, droneIdOverride) {
+  if (frame.payloadLength < 30) {
+    throw new Error(
+      `GPS_RAW_INT payload too short: ${frame.payloadLength}`
+    );
+  }
+
+  verifyChecksum(
+    buffer,
+    frame,
+    GPS_RAW_INT_CRC_EXTRA,
+    "GPS_RAW_INT"
+  );
+
+  const p = frame.payloadOffset;
+
+  const eph = buffer.readUInt16LE(p + 20);
+  const epv = buffer.readUInt16LE(p + 22);
+  const fixType = buffer[p + 28];
+  const satellitesVisible = buffer[p + 29];
+
+  const telemetry = {
+    kind: "GPS_QUALITY",
+    droneId: droneIdFor(frame, droneIdOverride),
+    timestamp: new Date().toISOString(),
+    gpsFixType: fixType
+  };
+
+  if (satellitesVisible !== UNKNOWN_UINT8) {
+    telemetry.satellitesVisible = satellitesVisible;
+  }
+
+  if (eph !== UNKNOWN_UINT16) {
+    telemetry.hdop = eph / 100;
+  }
+
+  if (epv !== UNKNOWN_UINT16) {
+    telemetry.vdop = epv / 100;
+  }
+
+  // MAVLink 2 extension fields
+  // h_acc: payload offset 34, millimetres
+  if (frame.payloadLength >= 38) {
+    telemetry.horizontalAccuracy =
+      buffer.readUInt32LE(p + 34) / 1000;
+  }
+
+  // v_acc: payload offset 38, millimetres
+  if (frame.payloadLength >= 42) {
+    telemetry.verticalAccuracy =
+      buffer.readUInt32LE(p + 38) / 1000;
+  }
+
+  return telemetry;
 }
 
 export function parseMavlinkTelemetry(buffer, options = {}) {
@@ -172,14 +235,24 @@ export function parseMavlinkTelemetry(buffer, options = {}) {
       continue;
     }
 
-    const position = decodeGlobalPositionInt(
-      buffer,
-      frame,
-      options.droneId
-    );
+    let decoded = null;
 
-    if (position) {
-      telemetry.push(position);
+    if (frame.messageId === GLOBAL_POSITION_INT_ID) {
+      decoded = decodeGlobalPositionInt(
+        buffer,
+        frame,
+        options.droneId
+      );
+    } else if (frame.messageId === GPS_RAW_INT_ID) {
+      decoded = decodeGpsRawInt(
+        buffer,
+        frame,
+        options.droneId
+      );
+    }
+
+    if (decoded) {
+      telemetry.push(decoded);
     }
 
     offset += frame.frameLength;

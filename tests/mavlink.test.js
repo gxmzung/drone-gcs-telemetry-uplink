@@ -18,6 +18,20 @@ function crcAccumulate(byte, crc) {
   );
 }
 
+function finalizeV2Frame(frame, crcExtra) {
+  let crc = 0xffff;
+  const checksumOffset = frame.length - 2;
+
+  for (const byte of frame.subarray(1, checksumOffset)) {
+    crc = crcAccumulate(byte, crc);
+  }
+
+  crc = crcAccumulate(crcExtra, crc);
+  frame.writeUInt16LE(crc, checksumOffset);
+
+  return frame;
+}
+
 function makeGlobalPositionIntV2({
   systemId = 1,
   lat = -353633515,
@@ -30,37 +44,61 @@ function makeGlobalPositionIntV2({
   payload.writeInt32LE(lat, 4);
   payload.writeInt32LE(lon, 8);
   payload.writeInt32LE(alt, 12);
-  payload.writeInt32LE(1000, 16);
-  payload.writeInt16LE(0, 20);
-  payload.writeInt16LE(0, 22);
-  payload.writeInt16LE(0, 24);
-  payload.writeUInt16LE(0, 26);
 
   const frame = Buffer.alloc(40);
 
   frame[0] = 0xfd;
-  frame[1] = 28;
-  frame[2] = 0;
-  frame[3] = 0;
+  frame[1] = payload.length;
   frame[4] = 1;
   frame[5] = systemId;
   frame[6] = 1;
   frame[7] = 33;
-  frame[8] = 0;
-  frame[9] = 0;
 
   payload.copy(frame, 10);
 
-  let crc = 0xffff;
+  return finalizeV2Frame(frame, 104);
+}
 
-  for (const byte of frame.subarray(1, 38)) {
-    crc = crcAccumulate(byte, crc);
-  }
+function makeGpsRawIntV2({
+  systemId = 1,
+  fixType = 6,
+  satellitesVisible = 18,
+  eph = 85,
+  epv = 120,
+  horizontalAccuracyMm = 350,
+  verticalAccuracyMm = 650
+} = {}) {
+  const payload = Buffer.alloc(52);
 
-  crc = crcAccumulate(104, crc);
-  frame.writeUInt16LE(crc, 38);
+  payload.writeBigUInt64LE(123456789n, 0);
+  payload.writeInt32LE(-353633515, 8);
+  payload.writeInt32LE(1491652412, 12);
+  payload.writeInt32LE(587000, 16);
 
-  return frame;
+  payload.writeUInt16LE(eph, 20);
+  payload.writeUInt16LE(epv, 22);
+  payload.writeUInt16LE(0, 24);
+  payload.writeUInt16LE(0, 26);
+
+  payload[28] = fixType;
+  payload[29] = satellitesVisible;
+
+  payload.writeInt32LE(588000, 30);
+  payload.writeUInt32LE(horizontalAccuracyMm, 34);
+  payload.writeUInt32LE(verticalAccuracyMm, 38);
+
+  const frame = Buffer.alloc(64);
+
+  frame[0] = 0xfd;
+  frame[1] = payload.length;
+  frame[4] = 1;
+  frame[5] = systemId;
+  frame[6] = 1;
+  frame[7] = 24;
+
+  payload.copy(frame, 10);
+
+  return finalizeV2Frame(frame, 24);
 }
 
 test("detects MAVLink v2 datagram", () => {
@@ -77,10 +115,53 @@ test("decodes GLOBAL_POSITION_INT telemetry", () => {
   );
 
   assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "POSITION");
   assert.equal(rows[0].droneId, "SITL-001");
   assert.equal(rows[0].latitude, -35.3633515);
   assert.equal(rows[0].longitude, 149.1652412);
   assert.equal(rows[0].altitude, 587);
+  assert.equal(
+    rows[0].positionSource,
+    "GLOBAL_POSITION_INT(33)"
+  );
+});
+
+test("decodes GPS_RAW_INT quality telemetry", () => {
+  const rows = parseMavlinkTelemetry(
+    makeGpsRawIntV2(),
+    { droneId: "SITL-001" }
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "GPS_QUALITY");
+  assert.equal(rows[0].droneId, "SITL-001");
+  assert.equal(rows[0].gpsFixType, 6);
+  assert.equal(rows[0].satellitesVisible, 18);
+  assert.equal(rows[0].hdop, 0.85);
+  assert.equal(rows[0].vdop, 1.2);
+  assert.equal(rows[0].horizontalAccuracy, 0.35);
+  assert.equal(rows[0].verticalAccuracy, 0.65);
+});
+
+test("supports GPS_RAW_INT without MAVLink 2 extension fields", () => {
+  const full = makeGpsRawIntV2();
+
+  const payload = full.subarray(10, 40);
+  const frame = Buffer.alloc(42);
+
+  full.copy(frame, 0, 0, 10);
+  frame[1] = 30;
+  payload.copy(frame, 10);
+
+  finalizeV2Frame(frame, 24);
+
+  const rows = parseMavlinkTelemetry(frame);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].gpsFixType, 6);
+  assert.equal(rows[0].satellitesVisible, 18);
+  assert.equal(rows[0].horizontalAccuracy, undefined);
+  assert.equal(rows[0].verticalAccuracy, undefined);
 });
 
 test("rejects invalid GLOBAL_POSITION_INT checksum", () => {
@@ -94,7 +175,18 @@ test("rejects invalid GLOBAL_POSITION_INT checksum", () => {
   );
 });
 
-test("ignores non-position MAVLink message", () => {
+test("rejects invalid GPS_RAW_INT checksum", () => {
+  const frame = makeGpsRawIntV2();
+
+  frame[62] ^= 0xff;
+
+  assert.throws(
+    () => parseMavlinkTelemetry(frame),
+    /checksum mismatch/
+  );
+});
+
+test("ignores unsupported MAVLink message", () => {
   const frame = makeGlobalPositionIntV2();
 
   frame[7] = 0;

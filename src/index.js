@@ -20,6 +20,9 @@ if (!Number.isInteger(udpPort) || udpPort < 1 || udpPort > 65535) {
   throw new Error("GCS_UDP_PORT must be a valid UDP port");
 }
 
+const latestPositions = new Map();
+const latestGpsQuality = new Map();
+
 async function forwardTelemetry(telemetry, source, bytes) {
   log("TELEMETRY_RECEIVED", {
     droneId: telemetry.droneId,
@@ -27,12 +30,68 @@ async function forwardTelemetry(telemetry, source, bytes) {
     bytes,
     latitude: telemetry.latitude,
     longitude: telemetry.longitude,
-    altitude: telemetry.altitude
+    altitude: telemetry.altitude,
+    gpsFixType: telemetry.gpsFixType,
+    satellitesVisible: telemetry.satellitesVisible,
+    hdop: telemetry.hdop,
+    vdop: telemetry.vdop,
+    horizontalAccuracy: telemetry.horizontalAccuracy,
+    verticalAccuracy: telemetry.verticalAccuracy
   });
 
   await sendTelemetry(telemetry, {
     url: serverUrl
   });
+}
+
+async function handleMavlinkTelemetry(event, source, bytes) {
+  if (event.kind === "GPS_QUALITY") {
+    const {
+      kind,
+      droneId,
+      timestamp,
+      ...quality
+    } = event;
+
+    latestGpsQuality.set(droneId, quality);
+
+    const position = latestPositions.get(droneId);
+
+    if (!position) {
+      return;
+    }
+
+    await forwardTelemetry(
+      {
+        ...position,
+        ...quality,
+        timestamp
+      },
+      source,
+      bytes
+    );
+
+    return;
+  }
+
+  const {
+    kind,
+    ...position
+  } = event;
+
+  latestPositions.set(position.droneId, position);
+
+  const quality =
+    latestGpsQuality.get(position.droneId) ?? {};
+
+  await forwardTelemetry(
+    {
+      ...position,
+      ...quality
+    },
+    source,
+    bytes
+  );
 }
 
 const socket = createUdpListener({
@@ -49,7 +108,7 @@ const socket = createUdpListener({
         });
 
         for (const telemetry of rows) {
-          await forwardTelemetry(
+          await handleMavlinkTelemetry(
             telemetry,
             source,
             message.length
