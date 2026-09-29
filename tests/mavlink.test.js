@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  inspectMavlinkFrames,
   isMavlinkDatagram,
   parseMavlinkTelemetry
 } from "../src/telemetry/mavlink.js";
@@ -34,6 +35,7 @@ function finalizeV2Frame(frame, crcExtra) {
 
 function makeGlobalPositionIntV2({
   systemId = 1,
+  sequence = 1,
   lat = -353633515,
   lon = 1491652412,
   alt = 587000
@@ -49,7 +51,7 @@ function makeGlobalPositionIntV2({
 
   frame[0] = 0xfd;
   frame[1] = payload.length;
-  frame[4] = 1;
+  frame[4] = sequence;
   frame[5] = systemId;
   frame[6] = 1;
   frame[7] = 33;
@@ -61,6 +63,7 @@ function makeGlobalPositionIntV2({
 
 function makeGpsRawIntV2({
   systemId = 1,
+  sequence = 1,
   fixType = 6,
   satellitesVisible = 18,
   eph = 85,
@@ -91,7 +94,7 @@ function makeGpsRawIntV2({
 
   frame[0] = 0xfd;
   frame[1] = payload.length;
-  frame[4] = 1;
+  frame[4] = sequence;
   frame[5] = systemId;
   frame[6] = 1;
   frame[7] = 24;
@@ -100,6 +103,19 @@ function makeGpsRawIntV2({
 
   return finalizeV2Frame(frame, 24);
 }
+
+
+test("inspects MAVLink frame sequence metadata", () => {
+  const frame = makeGlobalPositionIntV2({ systemId: 7, sequence: 42 });
+  const rows = inspectMavlinkFrames(frame);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].version, 2);
+  assert.equal(rows[0].systemId, 7);
+  assert.equal(rows[0].componentId, 1);
+  assert.equal(rows[0].sequence, 42);
+  assert.equal(rows[0].messageId, 33);
+});
 
 test("detects MAVLink v2 datagram", () => {
   assert.equal(
@@ -124,6 +140,8 @@ test("decodes GLOBAL_POSITION_INT telemetry", () => {
     rows[0].positionSource,
     "GLOBAL_POSITION_INT(33)"
   );
+  assert.equal(rows[0].mavlinkVersion, 2);
+  assert.equal(rows[0].mavlinkSequence, 1);
 });
 
 test("decodes GPS_RAW_INT quality telemetry", () => {

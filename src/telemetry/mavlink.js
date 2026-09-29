@@ -54,6 +54,7 @@ function readFrame(buffer, offset) {
 
     return {
       version: 1,
+      sequence: buffer[offset + 2],
       offset,
       frameLength,
       payloadLength,
@@ -85,6 +86,7 @@ function readFrame(buffer, offset) {
 
   return {
     version: 2,
+    sequence: buffer[offset + 4],
     offset,
     frameLength,
     payloadLength,
@@ -152,7 +154,12 @@ function decodeGlobalPositionInt(buffer, frame, droneIdOverride) {
     latitude,
     longitude,
     altitude,
-    positionSource: "GLOBAL_POSITION_INT(33)"
+    positionSource: "GLOBAL_POSITION_INT(33)",
+    mavlinkVersion: frame.version,
+    mavlinkSystemId: frame.systemId,
+    mavlinkComponentId: frame.componentId,
+    mavlinkSequence: frame.sequence,
+    mavlinkMessageId: frame.messageId
   };
 }
 
@@ -181,7 +188,12 @@ function decodeGpsRawInt(buffer, frame, droneIdOverride) {
     kind: "GPS_QUALITY",
     droneId: droneIdFor(frame, droneIdOverride),
     timestamp: new Date().toISOString(),
-    gpsFixType: fixType
+    gpsFixType: fixType,
+    mavlinkVersion: frame.version,
+    mavlinkSystemId: frame.systemId,
+    mavlinkComponentId: frame.componentId,
+    mavlinkSequence: frame.sequence,
+    mavlinkMessageId: frame.messageId
   };
 
   if (satellitesVisible !== UNKNOWN_UINT8) {
@@ -210,6 +222,45 @@ function decodeGpsRawInt(buffer, frame, droneIdOverride) {
   }
 
   return telemetry;
+}
+
+
+export function inspectMavlinkFrames(buffer) {
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error("MAVLink input must be a Buffer");
+  }
+
+  const frames = [];
+  let offset = 0;
+
+  while (offset < buffer.length) {
+    const magic = buffer[offset];
+
+    if (magic !== MAVLINK_V1_MAGIC && magic !== MAVLINK_V2_MAGIC) {
+      offset += 1;
+      continue;
+    }
+
+    const frame = readFrame(buffer, offset);
+
+    if (!frame) {
+      offset += 1;
+      continue;
+    }
+
+    frames.push({
+      version: frame.version,
+      sequence: frame.sequence,
+      systemId: frame.systemId,
+      componentId: frame.componentId,
+      messageId: frame.messageId,
+      frameLength: frame.frameLength
+    });
+
+    offset += frame.frameLength;
+  }
+
+  return frames;
 }
 
 export function parseMavlinkTelemetry(buffer, options = {}) {

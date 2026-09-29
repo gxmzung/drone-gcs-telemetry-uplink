@@ -1,8 +1,10 @@
 import { parseUdpTelemetry } from "./telemetry/normalize.js";
 import {
+  inspectMavlinkFrames,
   isMavlinkDatagram,
   parseMavlinkTelemetry
 } from "./telemetry/mavlink.js";
+import { MavlinkLinkQualityTracker } from "./telemetry/link-quality.js";
 import { createUdpListener } from "./transport/udp-listener.js";
 import { sendTelemetry } from "./transport/http-uplink.js";
 import { log } from "./logging/logger.js";
@@ -22,6 +24,8 @@ if (!Number.isInteger(udpPort) || udpPort < 1 || udpPort > 65535) {
 
 const latestPositions = new Map();
 const latestGpsQuality = new Map();
+const linkQualityTracker = new MavlinkLinkQualityTracker({ windowSize: 100 });
+const lastQualityLogAt = new Map();
 
 async function forwardTelemetry(telemetry, source, bytes) {
   log("TELEMETRY_RECEIVED", {
@@ -36,7 +40,13 @@ async function forwardTelemetry(telemetry, source, bytes) {
     hdop: telemetry.hdop,
     vdop: telemetry.vdop,
     horizontalAccuracy: telemetry.horizontalAccuracy,
-    verticalAccuracy: telemetry.verticalAccuracy
+    verticalAccuracy: telemetry.verticalAccuracy,
+    packetLossPct: telemetry.packetLossPct,
+    periodAvgMs: telemetry.periodAvgMs,
+    periodP95Ms: telemetry.periodP95Ms,
+    periodMaxMs: telemetry.periodMaxMs,
+    qualityWindowExpected: telemetry.qualityWindowExpected,
+    qualityWindowLost: telemetry.qualityWindowLost
   });
 
   await sendTelemetry(telemetry, {
@@ -86,8 +96,8 @@ async function handleMavlinkTelemetry(event, source, bytes) {
 
   await forwardTelemetry(
     {
-      ...position,
-      ...quality
+      ...quality,
+      ...position
     },
     source,
     bytes
@@ -103,13 +113,37 @@ const socket = createUdpListener({
 
     try {
       if (isMavlinkDatagram(message)) {
+        const receivedAtMs = Date.now();
+        const frames = inspectMavlinkFrames(message);
+
+        for (const frame of frames) {
+          const quality = linkQualityTracker.observe(frame, receivedAtMs);
+          if (!quality || quality.qualityWindowExpected < 2) continue;
+
+          const qualityKey = `${frame.systemId}:${frame.componentId}`;
+          const lastLoggedAt = lastQualityLogAt.get(qualityKey) ?? 0;
+
+          if (receivedAtMs - lastLoggedAt >= 5000) {
+            lastQualityLogAt.set(qualityKey, receivedAtMs);
+            log("LINK_QUALITY", quality);
+          }
+        }
+
         const rows = parseMavlinkTelemetry(message, {
           droneId: droneIdOverride
         });
 
         for (const telemetry of rows) {
+          const linkQuality = linkQualityTracker.snapshot(
+            telemetry.mavlinkSystemId,
+            telemetry.mavlinkComponentId
+          );
+
           await handleMavlinkTelemetry(
-            telemetry,
+            {
+              ...telemetry,
+              ...(linkQuality ?? {})
+            },
             source,
             message.length
           );
