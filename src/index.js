@@ -27,7 +27,12 @@ const latestGpsQuality = new Map();
 const linkQualityTracker = new MavlinkLinkQualityTracker({ windowSize: 100 });
 const lastQualityLogAt = new Map();
 
-async function forwardTelemetry(telemetry, source, bytes) {
+async function forwardTelemetry(
+  telemetry,
+  source,
+  bytes,
+  uplinkReceivedAt
+) {
   log("TELEMETRY_RECEIVED", {
     droneId: telemetry.droneId,
     source,
@@ -49,12 +54,34 @@ async function forwardTelemetry(telemetry, source, bytes) {
     qualityWindowLost: telemetry.qualityWindowLost
   });
 
-  await sendTelemetry(telemetry, {
+  const payload = {
+    ...telemetry,
+
+    pathEvidence: {
+      uplinkReceivedAt:
+        uplinkReceivedAt ||
+        new Date().toISOString(),
+
+      uplinkForwardStartedAt:
+        new Date().toISOString(),
+
+      uplinkSource: source,
+      uplinkBytes: bytes,
+      transport: "UDP_TO_HTTP"
+    }
+  };
+
+  await sendTelemetry(payload, {
     url: serverUrl
   });
 }
 
-async function handleMavlinkTelemetry(event, source, bytes) {
+async function handleMavlinkTelemetry(
+  event,
+  source,
+  bytes,
+  uplinkReceivedAt
+) {
   if (event.kind === "GPS_QUALITY") {
     const {
       kind,
@@ -78,7 +105,8 @@ async function handleMavlinkTelemetry(event, source, bytes) {
         timestamp
       },
       source,
-      bytes
+      bytes,
+      uplinkReceivedAt
     );
 
     return;
@@ -100,7 +128,8 @@ async function handleMavlinkTelemetry(event, source, bytes) {
       ...position
     },
     source,
-    bytes
+    bytes,
+    uplinkReceivedAt
   );
 }
 
@@ -110,6 +139,8 @@ const socket = createUdpListener({
 
   async onPacket(message, remote) {
     const source = `${remote.address}:${remote.port}`;
+    const uplinkReceivedAt =
+      new Date().toISOString();
 
     try {
       if (isMavlinkDatagram(message)) {
@@ -145,7 +176,8 @@ const socket = createUdpListener({
               ...(linkQuality ?? {})
             },
             source,
-            message.length
+            message.length,
+            uplinkReceivedAt
           );
         }
 
@@ -157,7 +189,8 @@ const socket = createUdpListener({
       await forwardTelemetry(
         telemetry,
         source,
-        message.length
+        message.length,
+        uplinkReceivedAt
       );
     } catch (error) {
       log(
