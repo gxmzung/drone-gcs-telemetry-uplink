@@ -22,3 +22,10 @@ set RTSP_LISTEN_HOST=0.0.0.0
 set RTSP_LISTEN_PORT=9554
 set RTSP_SOURCE_HOST=127.0.0.1
 set RTSP_SOURCE_PORT=8554
+
+REM ===== Primary / Backup Core R2 =====
+REM 여러 서버 사용 시 아래 설정 활성화
+REM set TELEMETRY_SERVER_URLS=http://192.168.10.10:18020/internal/v1/telemetry/drone,http://192.168.10.11:18020/internal/v1/telemetry/drone
+set UPLINK_HTTP_TIMEOUT_MS=1500
+set UPLINK_ATTEMPTS_PER_SERVER=1
+set UPLINK_FAILBACK_PROBE_MS=10000

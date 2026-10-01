@@ -6,7 +6,10 @@ import {
 } from "./telemetry/mavlink.js";
 import { MavlinkLinkQualityTracker } from "./telemetry/link-quality.js";
 import { createUdpListener } from "./transport/udp-listener.js";
-import { sendTelemetry } from "./transport/http-uplink.js";
+import {
+  createFailoverUplink,
+  parseTelemetryServerUrls
+} from "./transport/http-uplink.js";
 import {
   log,
   logDevice
@@ -15,9 +18,25 @@ import { startRtspProxy } from "./video/rtsp-proxy.js";
 
 const udpHost = process.env.GCS_UDP_HOST?.trim() || "0.0.0.0";
 const udpPort = Number.parseInt(process.env.GCS_UDP_PORT || "14551", 10);
-const serverUrl =
-  process.env.TELEMETRY_SERVER_URL?.trim() ||
-  "http://127.0.0.1:18020/internal/v1/telemetry/drone";
+const serverUrls =
+  parseTelemetryServerUrls(
+    process.env.TELEMETRY_SERVER_URLS,
+    process.env.TELEMETRY_SERVER_URL
+  );
+
+const failoverUplink =
+  createFailoverUplink({
+    urls: serverUrls,
+    timeoutMs: Number.parseInt(process.env.UPLINK_HTTP_TIMEOUT_MS || "1500", 10),
+    attemptsPerServer: Number.parseInt(process.env.UPLINK_ATTEMPTS_PER_SERVER || "1", 10),
+    failbackProbeEveryMs: Number.parseInt(process.env.UPLINK_FAILBACK_PROBE_MS || "10000", 10)
+  });
+
+log("UPLINK_SERVERS_CONFIGURED", {
+  primary: serverUrls[0],
+  backups: serverUrls.slice(1),
+  automaticFailover: serverUrls.length > 1
+});
 
 const droneIdOverride =
   process.env.GCS_DRONE_ID?.trim() || "";
@@ -100,9 +119,7 @@ async function forwardTelemetry(
     }
   };
 
-  await sendTelemetry(payload, {
-    url: serverUrl
-  });
+  await failoverUplink.send(payload);
 }
 
 async function handleMavlinkTelemetry(
