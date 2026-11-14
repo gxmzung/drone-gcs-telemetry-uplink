@@ -366,3 +366,16 @@ drone-gcs-telemetry-forwarder/
 ├── README.md
 └── .env.example
 ```
+
+## Runtime terminology
+
+- **GCS Station**: Mission Planner 등 드론 지상통제 시스템
+- **GCS Workstation**: GCS Station과 현장 프로그램이 실행되는 Windows PC
+- **Telemetry Uplink Agent**: GCS Workstation에서 백그라운드로 동작하며 MAVLink UDP를 Core Server로 전달하는 프로그램
+- **RTSP TCP Proxy**: GCS Workstation에서 RTSP-over-TCP 영상 경로를 중계하는 Agent 기능
+- **Core Server**: 관제 데이터 수집 및 처리 서버
+- **Dashboard**: Core Server 데이터를 표시하는 통합 관제 UI
+
+기본 경로: Drone -> GCS Station -> MAVLink UDP 14551 -> GCS Workstation -> Telemetry Uplink Agent -> Core Server -> Dashboard
+
+Telemetry Uplink Agent는 별도 화면 프로그램이 아니라 GCS Workstation에서 백그라운드로 실행되는 현장 Agent입니다.

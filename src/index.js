@@ -6,17 +6,65 @@ import {
 } from "./telemetry/mavlink.js";
 import { MavlinkLinkQualityTracker } from "./telemetry/link-quality.js";
 import { createUdpListener } from "./transport/udp-listener.js";
-import { sendTelemetry } from "./transport/http-uplink.js";
-import { log } from "./logging/logger.js";
+import {
+  createFailoverUplink,
+  parseTelemetryServerUrls
+} from "./transport/http-uplink.js";
+import {
+  log,
+  logDevice
+} from "./logging/logger.js";
+import { startRtspProxy } from "./video/rtsp-proxy.js";
 
 const udpHost = process.env.GCS_UDP_HOST?.trim() || "0.0.0.0";
 const udpPort = Number.parseInt(process.env.GCS_UDP_PORT || "14551", 10);
-const serverUrl =
-  process.env.TELEMETRY_SERVER_URL?.trim() ||
-  "http://127.0.0.1:18020/internal/v1/telemetry/drone";
+const serverUrls =
+  parseTelemetryServerUrls(
+    process.env.TELEMETRY_SERVER_URLS,
+    process.env.TELEMETRY_SERVER_URL
+  );
+
+const failoverUplink =
+  createFailoverUplink({
+    urls: serverUrls,
+    timeoutMs: Number.parseInt(process.env.UPLINK_HTTP_TIMEOUT_MS || "1500", 10),
+    attemptsPerServer: Number.parseInt(process.env.UPLINK_ATTEMPTS_PER_SERVER || "1", 10),
+    failbackProbeEveryMs: Number.parseInt(process.env.UPLINK_FAILBACK_PROBE_MS || "10000", 10)
+  });
+
+log("UPLINK_SERVERS_CONFIGURED", {
+  primary: serverUrls[0],
+  backups: serverUrls.slice(1),
+  automaticFailover: serverUrls.length > 1
+});
 
 const droneIdOverride =
   process.env.GCS_DRONE_ID?.trim() || "";
+
+const rtspEnabled =
+  /^(1|true|yes)$/i.test(
+    process.env.RTSP_PROXY_ENABLED?.trim() || ""
+  );
+
+const rtspListenHost =
+  process.env.RTSP_LISTEN_HOST?.trim() ||
+  "0.0.0.0";
+
+const rtspListenPort =
+  Number.parseInt(
+    process.env.RTSP_LISTEN_PORT || "9554",
+    10
+  );
+
+const rtspSourceHost =
+  process.env.RTSP_SOURCE_HOST?.trim() ||
+  "127.0.0.1";
+
+const rtspSourcePort =
+  Number.parseInt(
+    process.env.RTSP_SOURCE_PORT || "8554",
+    10
+  );
 
 if (!Number.isInteger(udpPort) || udpPort < 1 || udpPort > 65535) {
   throw new Error("GCS_UDP_PORT must be a valid UDP port");
@@ -71,9 +119,7 @@ async function forwardTelemetry(
     }
   };
 
-  await sendTelemetry(payload, {
-    url: serverUrl
-  });
+  await failoverUplink.send(payload);
 }
 
 async function handleMavlinkTelemetry(
@@ -148,8 +194,26 @@ const socket = createUdpListener({
         const frames = inspectMavlinkFrames(message);
 
         for (const frame of frames) {
-          const quality = linkQualityTracker.observe(frame, receivedAtMs);
-          if (!quality || quality.qualityWindowExpected < 2) continue;
+          const quality = linkQualityTracker.observe(
+            frame,
+            receivedAtMs
+          );
+
+          logDevice("DEVICE_PACKET", {
+            source,
+            bytes: message.length,
+            receivedAt:
+              new Date(receivedAtMs).toISOString(),
+            ...frame,
+            ...(quality ?? {})
+          });
+
+          if (
+            !quality ||
+            quality.qualityWindowExpected < 2
+          ) {
+            continue;
+          }
 
           const qualityKey = `${frame.systemId}:${frame.componentId}`;
           const lastLoggedAt = lastQualityLogAt.get(qualityKey) ?? 0;
@@ -215,12 +279,54 @@ const socket = createUdpListener({
   }
 });
 
-function shutdown(signal) {
+let rtspProxy = null;
+
+if (rtspEnabled) {
+  if (
+    !Number.isInteger(rtspListenPort) ||
+    rtspListenPort < 1 ||
+    rtspListenPort > 65535 ||
+    !Number.isInteger(rtspSourcePort) ||
+    rtspSourcePort < 1 ||
+    rtspSourcePort > 65535
+  ) {
+    throw new Error(
+      "RTSP ports must be valid TCP ports"
+    );
+  }
+
+  rtspProxy = await startRtspProxy({
+    listenHost: rtspListenHost,
+    listenPort: rtspListenPort,
+    sourceHost: rtspSourceHost,
+    sourcePort: rtspSourcePort
+  });
+} else {
+  log("RTSP_PROXY_DISABLED", {
+    reason:
+      "Set RTSP_PROXY_ENABLED=true after the actual RTSP source is confirmed"
+  });
+}
+
+async function shutdown(signal) {
   log("GCS_DISCONNECTED", { signal });
 
-  socket.close(() => {
-    process.exit(0);
-  });
+  const tasks = [
+    new Promise((resolve) => {
+      try {
+        socket.close(() => resolve());
+      } catch {
+        resolve();
+      }
+    })
+  ];
+
+  if (rtspProxy) {
+    tasks.push(rtspProxy.close());
+  }
+
+  await Promise.allSettled(tasks);
+  process.exit(0);
 }
 
 process.once("SIGINT", () => shutdown("SIGINT"));
